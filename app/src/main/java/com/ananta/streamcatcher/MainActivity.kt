@@ -1,14 +1,11 @@
 package com.ananta.streamcatcher
 
 import android.app.Activity
-import android.app.AlertDialog
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
-import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
-import android.content.pm.ResolveInfo
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
@@ -16,473 +13,214 @@ import android.net.Uri
 import android.os.Bundle
 import android.view.Gravity
 import android.view.View
-import android.view.ViewGroup
-import android.webkit.JavascriptInterface
-import android.webkit.WebChromeClient
-import android.webkit.WebResourceRequest
-import android.webkit.WebView
-import android.webkit.WebViewClient
-import android.widget.Button
-import android.widget.EditText
-import android.widget.LinearLayout
-import android.widget.ScrollView
-import android.widget.TextView
-import android.widget.Toast
-import androidx.media3.common.MediaItem
-import androidx.media3.common.PlaybackException
-import androidx.media3.common.Player
-import androidx.media3.exoplayer.ExoPlayer
-import androidx.media3.ui.PlayerView
-import org.json.JSONArray
-import java.net.URLDecoder
+import android.widget.*
+import java.net.URI
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
 
-class MainActivity : Activity() {
-    private lateinit var address: EditText
-    private lateinit var results: LinearLayout
-    private lateinit var web: WebView
-    private lateinit var countLabel: TextView
-    private lateinit var browserPanel: LinearLayout
-    private val links = linkedMapOf<String, Long>()
-    private val prefs by lazy { getSharedPreferences("captures", Context.MODE_PRIVATE) }
+data class Capture(val url: String, val source: String, val time: String)
 
+class MainActivity : Activity() {
     private val bg = Color.rgb(8, 9, 20)
-    private val panel = Color.rgb(20, 22, 42)
-    private val cyan = Color.rgb(75, 225, 245)
-    private val purple = Color.rgb(166, 119, 255)
+    private val panel = Color.rgb(22, 23, 43)
+    private val purple = Color.rgb(177, 74, 255)
+    private val cyan = Color.rgb(0, 220, 220)
+    private val white = Color.WHITE
+    private val captures = mutableListOf<Capture>()
+    private var selectedPackage: String? = null
+    private lateinit var content: LinearLayout
+    private lateinit var status: TextView
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        window.statusBarColor = bg
-        window.navigationBarColor = bg
-        window.decorView.systemUiVisibility = 0
-        loadSaved()
-        buildInterface()
-        handleIncomingIntent(intent)
-        renderResults()
+        handleShare(intent)
+        showHome()
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        handleIncomingIntent(intent)
+        handleShare(intent)
+        showHome()
     }
 
-    private fun buildInterface() {
-        val page = LinearLayout(this).apply {
+    private fun handleShare(i: Intent?) {
+        if (i == null) return
+        val chunks = mutableListOf<String>()
+        when (i.action) {
+            Intent.ACTION_SEND -> {
+                i.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString()?.let(chunks::add)
+                (i.getParcelableExtra<Uri>(Intent.EXTRA_STREAM))?.let { chunks.add(it.toString()) }
+            }
+            Intent.ACTION_SEND_MULTIPLE -> {
+                i.getCharSequenceArrayListExtra(Intent.EXTRA_TEXT)?.forEach { chunks.add(it.toString()) }
+                i.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM)?.forEach { chunks.add(it.toString()) }
+            }
+        }
+        val source = i.getStringExtra(Intent.EXTRA_TITLE) ?: "Shared from another app"
+        chunks.flatMap { extractPlaylistUrls(it) }.distinct().forEach { url ->
+            if (captures.none { it.url == url }) {
+                captures.add(0, Capture(url, source, timestamp()))
+            }
+        }
+    }
+
+    private fun extractPlaylistUrls(text: String): List<String> {
+        val regex = Regex("""https?://[^\s"'<>]+""", RegexOption.IGNORE_CASE)
+        return regex.findAll(text).map { it.value.trimEnd(',', ')', ']', ';') }
+            .filter { u ->
+                val l = u.lowercase(Locale.ROOT)
+                l.contains(".m3u8") || l.contains(".m3u") || l.contains(".mpd") ||
+                    l.contains("format=m3u8") || l.contains("type=hls")
+            }.toList()
+    }
+
+    private fun timestamp() = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date())
+
+    private fun base(title: String, subtitle: String): LinearLayout {
+        val outer = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(bg)
+            setPadding(18, 18, 18, 20)
         }
-        val scroll = ScrollView(this).apply { isFillViewport = true }
-        val content = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(18), dp(14), dp(18), dp(24))
-        }
-        scroll.addView(content)
-        page.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
-
-        val top = LinearLayout(this).apply {
+        val header = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
-        val brand = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        brand.addView(label("ANANTA", 12f, cyan, true))
-        brand.addView(label("STREAM CATCHER", 21f, Color.WHITE, true))
-        top.addView(brand, LinearLayout.LayoutParams(0, -2, 1f))
-        top.addView(pill("LIVE SCANNER", cyan))
-        content.addView(top)
-        content.addView(label("HLS STREAM INSPECTOR  •  BROWSER + SHARE", 10f, Color.rgb(157, 162, 190), false).apply {
-            setPadding(0, dp(5), 0, dp(16))
-        })
-
-        val hero = glassCard()
-        hero.addView(label("Find your stream.", 23f, Color.WHITE, true))
-        hero.addView(label("Detect playlist requests from pages you browse, then inspect, copy or test the links you are allowed to access.", 12f, Color.rgb(190, 195, 220), false).apply {
-            setPadding(0, dp(5), 0, dp(12))
-        })
-        val stats = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-        stats.addView(label("●  Browser monitor ready", 11f, cyan, true), LinearLayout.LayoutParams(0, -2, 1f))
-        countLabel = label("${links.size} FOUND", 11f, Color.WHITE, true)
-        stats.addView(countLabel)
-        hero.addView(stats)
-        content.addView(hero, marginParams(bottom = 14))
-
-        val browserCard = glassCard()
-        browserCard.addView(sectionTitle("BROWSER CAPTURE", "01"))
-        address = EditText(this).apply {
-            hint = "https://website.example/live"
-            setSingleLine(true)
-            textSize = 13f
-            setTextColor(Color.WHITE)
-            setHintTextColor(Color.rgb(125, 130, 157))
-            setPadding(dp(13), dp(11), dp(13), dp(11))
-            background = rounded(Color.rgb(11, 14, 30), 14, Color.rgb(57, 62, 91), 1)
-            inputType = android.text.InputType.TYPE_TEXT_VARIATION_URI
-        }
-        browserCard.addView(address, marginParams(top = 10, bottom = 9))
-        val browserActions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        browserActions.addView(action("OPEN PAGE", true) { openWebsite() }, LinearLayout.LayoutParams(0, dp(44), 1.2f))
-        browserActions.addView(action("PASTE", false) { pasteAndOpen() }, LinearLayout.LayoutParams(0, dp(44), 0.8f).apply { leftMargin = dp(8) })
-        browserCard.addView(browserActions)
-        browserPanel = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        web = WebView(this).apply {
-            setBackgroundColor(Color.rgb(11, 13, 27))
-            settings.javaScriptEnabled = true
-            settings.domStorageEnabled = true
-            settings.mediaPlaybackRequiresUserGesture = true
-            settings.safeBrowsingEnabled = true
-            settings.javaScriptCanOpenWindowsAutomatically = false
-            addJavascriptInterface(PageResourceBridge(), "AnantaCapture")
-            webChromeClient = WebChromeClient()
-            webViewClient = object : WebViewClient() {
-                override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean = false
-                override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): android.webkit.WebResourceResponse? {
-                    val raw = request?.url?.toString() ?: return null
-                    extractPlaylistCandidates(raw).forEach { candidate -> runOnUiThread { addCapture(candidate) } }
-                    return null
-                }
-                override fun onPageFinished(view: WebView?, url: String?) {
-                    super.onPageFinished(view, url)
-                    injectResourceObserver()
-                }
-            }
-        }
-        browserPanel.addView(web, LinearLayout.LayoutParams(-1, dp(255)))
-        browserCard.addView(browserPanel, marginParams(top = 12))
-        val browserToggle = action("HIDE BROWSER VIEW", false) {
-            val visible = web.visibility == View.VISIBLE
-            web.visibility = if (visible) View.GONE else View.VISIBLE
-            (it as Button).text = if (visible) "SHOW BROWSER VIEW" else "HIDE BROWSER VIEW"
-        }
-        browserCard.addView(browserToggle, marginParams(top = 8))
-        content.addView(browserCard, marginParams(bottom = 14))
-
-        val shareCard = glassCard()
-        shareCard.addView(sectionTitle("CAPTURE FROM OTHER APPS", "02"))
-        shareCard.addView(label("Use Android Share or Copy Link in another app, then choose Ananta Stream Catcher. We can identify M3U8 URLs included in the shared text; encrypted traffic inside another app is not readable.", 12f, Color.rgb(185, 190, 215), false).apply {
-            setPadding(0, dp(8), 0, dp(10))
-        })
-        shareCard.addView(action("HOW CROSS-APP SHARE WORKS", false) {
-            AlertDialog.Builder(this)
-                .setTitle("Capture from another app")
-                .setMessage("1. In the source app, use Share or Copy Link.\n2. Choose Ananta Stream Catcher or paste the copied text here.\n3. If the shared text contains a playlist URL, it will appear below.\n\nAndroid isolates apps and encrypts HTTPS traffic. A normal app cannot inspect every other app's private requests or bypass DRM/certificate pinning.")
-                .setPositiveButton("GOT IT", null).show()
-        })
-        shareCard.addView(action("SELECT SOURCE APP", true) { showSourceAppSelector() }, marginParams(top = 10))
-        content.addView(shareCard, marginParams(bottom = 14))
-
-        val captureCard = glassCard()
-        val heading = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-        heading.addView(sectionTitle("DETECTED PLAYLISTS", "03"), LinearLayout.LayoutParams(0, -2, 1f))
-        heading.addView(action("EXPORT M3U", false) { exportPlaylist() })
-        captureCard.addView(heading)
-        captureCard.addView(label("Only candidate playlist URLs are listed. A detected URL may still require a valid session or authorization to play.", 11f, Color.rgb(150, 157, 188), false).apply {
-            setPadding(0, dp(5), 0, dp(10))
-        })
-        results = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        captureCard.addView(results)
-        val footerActions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        footerActions.addView(action("CLEAR HISTORY", false) { clearResults() }, LinearLayout.LayoutParams(0, dp(42), 1f))
-        footerActions.addView(action("PASTE LINK", false) { pasteAndOpen() }, LinearLayout.LayoutParams(0, dp(42), 1f).apply { leftMargin = dp(8) })
-        captureCard.addView(footerActions, marginParams(top = 8))
-        content.addView(captureCard)
-
-        page.addView(label("ANANTA STREAM CATCHER  •  PRIVATE LOCAL CAPTURE", 9f, Color.rgb(105, 111, 143), false).apply {
-            gravity = Gravity.CENTER
-            setPadding(0, dp(10), 0, dp(10))
-        })
-        setContentView(page)
+        header.addView(label("◈  $title", 23, white, true), LinearLayout.LayoutParams(0, -2, 1f))
+        header.addView(label("●", 18, cyan, true))
+        outer.addView(header)
+        outer.addView(label(subtitle, 12, Color.LTGRAY, false).apply { setPadding(2, 5, 0, 18) })
+        content = outer
+        return outer
     }
 
-    private inner class PageResourceBridge {
-        @JavascriptInterface fun onResource(url: String) {
-            extractPlaylistCandidates(url).forEach { candidate -> runOnUiThread { addCapture(candidate) } }
-        }
+    private fun showHome() {
+        val root = base("ANANTA STREAM CATCHER", "NETWORK INSPECTOR  •  v2.0.0")
+        card(root, "CAPTURE STATUS", "Ready • Share a playlist URL from another app to import it.")
+        val actions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        actions.addView(actionButton("SOURCE APPS") { showSources() }, LinearLayout.LayoutParams(0, 54, 1f).apply { marginEnd = 6 })
+        actions.addView(actionButton("CAPTURES (${captures.size})") { showCaptures() }, LinearLayout.LayoutParams(0, 54, 1f).apply { marginStart = 6 })
+        root.addView(actions)
+        root.addView(space(12))
+        card(root, "HOW TO CAPTURE FROM AN IPTV APP",
+            "1. Open the IPTV app.\n2. Use Share / Copy link if the app provides it.\n3. Choose Ananta Stream Catcher from Android's Share menu.\n4. Review and save the detected playlist URL.")
+        card(root, "IMPORTANT ANDROID LIMITATION",
+            "Selecting an app does not grant access to its private network requests. HTTPS encrypts URL paths and query strings. This app does not decrypt TLS, bypass certificate pinning, or defeat DRM.")
+        root.addView(actionButton("VIEW CAPTURE HISTORY") { showCaptures() })
+        root.addView(space(8))
+        root.addView(actionButton("EXPORT M3U") { exportM3u() })
+        setContentView(root)
     }
 
-    private fun injectResourceObserver() {
-        val js = """(function(){if(window.__anantaObserver)return;window.__anantaObserver=true;var seen={};function scan(){try{performance.getEntriesByType('resource').forEach(function(e){var u=e.name;if(u&&!seen[u]){seen[u]=1;window.AnantaCapture.onResource(u);}});}catch(e){}}scan();setInterval(scan,1200);var f=window.fetch;window.fetch=function(){try{var u=arguments[0]&&arguments[0].url?arguments[0].url:arguments[0];if(u)window.AnantaCapture.onResource(String(u));}catch(e){}return f.apply(this,arguments);};var o=XMLHttpRequest.prototype.open;XMLHttpRequest.prototype.open=function(m,u){try{if(u)window.AnantaCapture.onResource(String(u));}catch(e){}return o.apply(this,arguments);};})();"""
-        web.evaluateJavascript(js, null)
-    }
-
-    private fun glassCard(): LinearLayout = LinearLayout(this).apply {
-        orientation = LinearLayout.VERTICAL
-        setPadding(dp(15), dp(15), dp(15), dp(15))
-        background = GradientDrawable(GradientDrawable.Orientation.TL_BR,
-            intArrayOf(Color.rgb(30, 31, 59), Color.rgb(16, 21, 42), Color.rgb(19, 16, 39))).apply {
-            cornerRadius = dp(20).toFloat()
-            setStroke(dp(1), Color.rgb(65, 70, 111))
-        }
-        elevation = dp(3).toFloat()
-    }
-
-    private fun sectionTitle(title: String, number: String): LinearLayout = LinearLayout(this).apply {
-        orientation = LinearLayout.HORIZONTAL
-        gravity = Gravity.CENTER_VERTICAL
-        addView(label(number, 10f, cyan, true).apply {
-            background = rounded(Color.rgb(30, 54, 77), 7, Color.rgb(55, 101, 127), 1)
-            setPadding(dp(7), dp(5), dp(7), dp(5))
-        })
-        addView(label(title, 12f, Color.WHITE, true).apply { setPadding(dp(9), 0, 0, 0) })
-    }
-
-    private fun label(text: String, size: Float, color: Int, bold: Boolean) = TextView(this).apply {
-        this.text = text
-        textSize = size
-        setTextColor(color)
-        typeface = if (bold) Typeface.create("sans-serif", Typeface.BOLD) else Typeface.create("sans-serif", Typeface.NORMAL)
-    }
-
-    private fun pill(text: String, color: Int) = label(text, 9f, color, true).apply {
-        background = rounded(Color.rgb(24, 48, 62), 30, Color.rgb(57, 111, 131), 1)
-        setPadding(dp(11), dp(7), dp(11), dp(7))
-    }
-
-    private fun action(text: String, primary: Boolean, callback: (View) -> Unit): Button = Button(this).apply {
-        this.text = text
-        textSize = 10f
-        isAllCaps = false
-        typeface = Typeface.create("sans-serif", Typeface.BOLD)
-        setTextColor(if (primary) Color.rgb(8, 16, 29) else Color.WHITE)
-        background = if (primary) GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT,
-            intArrayOf(Color.rgb(79, 225, 242), Color.rgb(160, 126, 255))).apply { cornerRadius = dp(13).toFloat() }
-            else rounded(Color.rgb(39, 39, 70), 13, Color.rgb(82, 83, 128), 1)
-        setPadding(dp(8), 0, dp(8), 0)
-        setOnClickListener { callback(it) }
-    }
-
-    private fun rounded(color: Int, radius: Int, stroke: Int, strokeWidth: Int) = GradientDrawable().apply {
-        setColor(color); cornerRadius = dp(radius).toFloat(); setStroke(dp(strokeWidth), stroke)
-    }
-
-    private fun marginParams(top: Int = 0, bottom: Int = 0) = LinearLayout.LayoutParams(-1, -2).apply {
-        if (top > 0) topMargin = dp(top)
-        if (bottom > 0) bottomMargin = dp(bottom)
-    }
-
-    private fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()
-
-    private fun openWebsite() {
-        var url = address.text.toString().trim()
-        if (url.isBlank()) return
-        if (!url.startsWith("http://", true) && !url.startsWith("https://", true)) url = "https://$url"
-        val uri = Uri.parse(url)
-        if (uri.scheme !in listOf("http", "https") || uri.host.isNullOrBlank()) {
-            toast("Enter a valid HTTP or HTTPS URL"); return
-        }
-        address.setText(url)
-        web.visibility = View.VISIBLE
-        web.loadUrl(url)
-    }
-
-    private fun pasteAndOpen() {
-        val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-        val value = clipboard.primaryClip?.getItemAt(0)?.coerceToText(this)?.toString().orEmpty()
-        if (value.isBlank()) { toast("Clipboard is empty"); return }
-        handleSharedText(value)
-    }
-
-    private fun handleIncomingIntent(incoming: Intent?) {
-        if (incoming == null) return
-        when (incoming.action) {
-            Intent.ACTION_SEND -> {
-                val text = incoming.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString()
-                    ?: incoming.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)?.toString()
-                if (!text.isNullOrBlank()) handleSharedText(text)
-                else toast("No text or URL was included in the shared item")
-            }
-            Intent.ACTION_SEND_MULTIPLE -> {
-                val streams = incoming.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM)
-                val combined = streams.orEmpty().joinToString("\n") { it.toString() }
-                if (combined.isNotBlank()) handleSharedText(combined) else toast("No shared URLs found")
-            }
-            Intent.ACTION_VIEW -> incoming.dataString?.let { handleSharedText(it) }
-        }
-    }
-
-    private fun showSourceAppSelector() {
+    private fun showSources() {
+        val root = base("TARGET APPS", "Choose an installed app as your preferred IPTV source")
+        root.addView(actionButton("← BACK") { showHome() })
+        root.addView(space(10))
         val pm = packageManager
-        val launchIntent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
-        val apps = pm.queryIntentActivities(launchIntent, PackageManager.MATCH_ALL)
-            .filter { it.activityInfo.packageName != packageName }
-            .distinctBy { it.activityInfo.packageName }
-            .sortedBy { it.loadLabel(pm).toString().lowercase(Locale.ROOT) }
-        if (apps.isEmpty()) { toast("No launchable apps found"); return }
-        val labels = apps.map { "${it.loadLabel(pm)}  ·  ${it.activityInfo.packageName}" }.toTypedArray()
-        val saved = prefs.getString("preferred_source_package", "").orEmpty()
-        val selected = apps.indexOfFirst { it.activityInfo.packageName == saved }.coerceAtLeast(0)
-        AlertDialog.Builder(this)
-            .setTitle("Choose source app")
-            .setSingleChoiceItems(labels, selected) { dialog, which ->
-                val info = apps[which].activityInfo
-                prefs.edit().putString("preferred_source_package", info.packageName)
-                    .putString("preferred_source_label", apps[which].loadLabel(pm).toString()).apply()
-                toast("Preferred source: ${apps[which].loadLabel(pm)}")
-                dialog.dismiss()
-            }
-            .setNeutralButton("CLEAR SELECTION") { dialog, _ ->
-                prefs.edit().remove("preferred_source_package").remove("preferred_source_label").apply()
-                toast("Source selection cleared")
-                dialog.dismiss()
-            }
-            .setNegativeButton("CANCEL", null)
-            .setPositiveButton("INFO", null)
-            .create().apply {
-                setOnShowListener {
-                    getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
-                        AlertDialog.Builder(this@MainActivity)
-                            .setTitle("About source selection")
-                            .setMessage("Selecting an app only saves it as your preferred source for sharing/import workflows. Android does not grant access to that app's private traffic. HTTPS/TLS encryption and DRM-protected streams cannot be read by this app.")
-                            .setPositiveButton("OK", null).show()
-                    }
+        val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+        val apps = pm.queryIntentActivities(intent, PackageManager.MATCH_ALL)
+            .map { it.activityInfo.packageName to it.loadLabel(pm).toString() }
+            .distinctBy { it.first }
+            .sortedBy { it.second.lowercase(Locale.getDefault()) }
+        if (apps.isEmpty()) {
+            card(root, "NO APPS FOUND", "No launchable apps were returned by Android.")
+        } else {
+            apps.forEach { (pkg, name) ->
+                val row = LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    setPadding(12, 10, 12, 10)
+                    background = rounded(panel, 16)
                 }
-            }.show()
-    }
-
-    private fun handleSharedText(text: String) {
-        val candidates = extractPlaylistCandidates(text)
-        if (candidates.isNotEmpty()) {
-            candidates.forEach { addCapture(it) }
-            toast("Found ${candidates.size} playlist link(s)"); return
-        }
-        val url = Regex("https?://[^\\s<>\\\"']+", RegexOption.IGNORE_CASE).find(text)?.value
-        if (url != null) {
-            address.setText(url.trimEnd('.', ',', ')', ']'))
-            web.visibility = View.VISIBLE
-            web.loadUrl(address.text.toString())
-            toast("Opened shared URL in browser")
-        } else toast("No usable URL found in shared text")
-    }
-
-    private fun extractPlaylistCandidates(raw: String): Set<String> {
-        val out = linkedSetOf<String>()
-        val queue = ArrayDeque<String>()
-        queue.add(raw.trim())
-        repeat(4) {
-            val batch = queue.toList(); queue.clear()
-            for (candidate in batch) {
-                val cleaned = candidate.trim().trim('"', '\'', '<', '>', '(', ')', '[', ']', ',')
-                if (isPlaylistUrl(cleaned)) out.add(cleaned)
-                val decoded = runCatching { URLDecoder.decode(cleaned, "UTF-8") }.getOrDefault(cleaned)
-                if (decoded != cleaned) queue.add(decoded)
-                val uri = runCatching { Uri.parse(cleaned) }.getOrNull()
-                uri?.queryParameterNames?.forEach { key ->
-                    val value = runCatching { uri.getQueryParameter(key) }.getOrNull() ?: return@forEach
-                    if (value.startsWith("http", true)) queue.add(value)
-                }
-                Regex("https?://[^\\s<>\\\"']+", RegexOption.IGNORE_CASE).findAll(decoded)
-                    .forEach { queue.add(it.value.trimEnd('.', ',', ')', ']')) }
+                val icon = try { pm.getApplicationIcon(pkg) } catch (_: Exception) { null }
+                if (icon != null) row.addView(ImageView(this).apply { setImageDrawable(icon) },
+                    LinearLayout.LayoutParams(42, 42).apply { marginEnd = 12 })
+                val text = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+                text.addView(label(name, 15, white, true))
+                text.addView(label(pkg, 10, Color.LTGRAY, false))
+                row.addView(text, LinearLayout.LayoutParams(0, -2, 1f))
+                row.addView(actionButton(if (selectedPackage == pkg) "SELECTED" else "SELECT") {
+                    selectedPackage = pkg
+                    Toast.makeText(this, "$name selected as preferred source", Toast.LENGTH_SHORT).show()
+                    showSources()
+                })
+                root.addView(row, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = 8 })
             }
         }
-        return out
+        setContentView(ScrollView(this).apply { addView(root) })
     }
 
-    private fun isPlaylistUrl(raw: String): Boolean {
-        if (!raw.startsWith("http://", true) && !raw.startsWith("https://", true)) return false
-        val decoded = runCatching { URLDecoder.decode(raw, "UTF-8") }.getOrDefault(raw)
-        val uri = runCatching { Uri.parse(decoded) }.getOrNull() ?: return false
-        val path = uri.path.orEmpty().lowercase(Locale.ROOT)
-        val full = decoded.lowercase(Locale.ROOT)
-        return path.endsWith(".m3u8") || path.endsWith(".m3u") ||
-            full.contains(".m3u8%3f") || full.contains("application/vnd.apple.mpegurl") ||
-            full.contains("application/x-mpegurl")
-    }
-
-    private fun addCapture(url: String) {
-        if (links.containsKey(url)) return
-        links[url] = System.currentTimeMillis()
-        saveAll(); renderResults()
-        toast("M3U8 candidate detected")
-    }
-
-    private fun renderResults() {
-        if (!::results.isInitialized) return
-        results.removeAllViews()
-        if (::countLabel.isInitialized) countLabel.text = "${links.size} FOUND"
-        if (links.isEmpty()) {
-            results.addView(label("No playlist candidates yet. Open a page that you are authorized to inspect, or share a playlist URL into this app.", 12f, Color.rgb(160, 166, 193), false).apply {
-                setPadding(dp(10), dp(15), dp(10), dp(15))
-            })
-            return
+    private fun showCaptures() {
+        val root = base("CAPTURE HISTORY", "${captures.size} imported playlist URL(s)")
+        root.addView(actionButton("← BACK") { showHome() })
+        root.addView(space(10))
+        if (captures.isEmpty()) card(root, "NO CAPTURES YET", "Share a playlist URL to this app from an IPTV app or browser.")
+        captures.forEach { c ->
+            card(root, "HLS / PLAYLIST URL", "${c.url}\n\nSource: ${c.source}\nTime: ${c.time}")
+            val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+            row.addView(actionButton("COPY") {
+                val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                cm.setPrimaryClip(ClipData.newPlainText("Playlist URL", c.url))
+                Toast.makeText(this, "URL copied", Toast.LENGTH_SHORT).show()
+            }, LinearLayout.LayoutParams(0, 48, 1f).apply { marginEnd = 5 })
+            row.addView(actionButton("OPEN") {
+                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(c.url)))
+            }, LinearLayout.LayoutParams(0, 48, 1f).apply { marginStart = 5 })
+            root.addView(row)
+            root.addView(space(8))
         }
-        links.entries.toList().asReversed().forEachIndexed { index, entry ->
-            val url = entry.key
-            val card = LinearLayout(this).apply {
-                orientation = LinearLayout.VERTICAL
-                setPadding(dp(12), dp(11), dp(12), dp(10))
-                background = rounded(Color.rgb(12, 17, 34), 15, Color.rgb(58, 69, 105), 1)
+        setContentView(ScrollView(this).apply { addView(root) })
+    }
+
+    private fun exportM3u() {
+        val body = buildString {
+            append("#EXTM3U\n")
+            captures.forEachIndexed { n, c ->
+                append("#EXTINF:-1,Ananta Capture ${n + 1}\n")
+                append(c.url).append('\n')
             }
-            val top = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-            top.addView(pill("HLS  •  ${index + 1}", cyan))
-            top.addView(label(Uri.parse(url).host.orEmpty(), 10f, Color.rgb(157, 164, 196), true).apply {
-                setPadding(dp(8), 0, 0, 0); maxLines = 1
-            }, LinearLayout.LayoutParams(0, -2, 1f))
-            card.addView(top)
-            card.addView(label(url, 11f, Color.WHITE, false).apply {
-                setPadding(0, dp(9), 0, dp(9)); setTextIsSelectable(true); maxLines = 4
-            })
-            val actions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-            actions.addView(action("COPY", false) { copy(url) }, LinearLayout.LayoutParams(0, dp(38), 1f))
-            actions.addView(action("PLAY TEST", true) { testStream(url) }, LinearLayout.LayoutParams(0, dp(38), 1f).apply { leftMargin = dp(7) })
-            actions.addView(action("REMOVE", false) { links.remove(url); saveAll(); renderResults() }, LinearLayout.LayoutParams(0, dp(38), 1f).apply { leftMargin = dp(7) })
-            card.addView(actions)
-            results.addView(card, marginParams(bottom = 9))
         }
-    }
-
-    private fun testStream(url: String) {
-        val playerView = PlayerView(this)
-        val player = ExoPlayer.Builder(this).build()
-        playerView.player = player
-        val dialog = AlertDialog.Builder(this).setTitle("Stream test").setView(playerView)
-            .setNegativeButton("CLOSE", null).create()
-        dialog.setOnDismissListener { player.release() }
-        dialog.show()
-        player.setMediaItem(MediaItem.fromUri(url))
-        player.addListener(object : Player.Listener {
-            override fun onPlayerError(error: PlaybackException) { toast("Playback failed: ${error.errorCodeName}") }
-        })
-        player.prepare(); player.playWhenReady = true
-    }
-
-    private fun copy(value: String) {
-        val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-        clipboard.setPrimaryClip(ClipData.newPlainText("M3U8 URL", value))
-        toast("Link copied")
-    }
-
-    private fun clearResults() { links.clear(); saveAll(); renderResults() }
-
-    private fun exportPlaylist() {
-        if (links.isEmpty()) { toast("No playlist links detected yet"); return }
-        val body = links.keys.joinToString("\n", prefix = "#EXTM3U\n") { "#EXTINF:-1,Detected stream\n$it" }
         val send = Intent(Intent.ACTION_SEND).apply {
-            type = "audio/x-mpegurl"
-            putExtra(Intent.EXTRA_SUBJECT, "Ananta detected streams.m3u")
+            type = "text/plain"
+            putExtra(Intent.EXTRA_SUBJECT, "Ananta Stream Catcher playlist")
             putExtra(Intent.EXTRA_TEXT, body)
         }
-        startActivity(Intent.createChooser(send, "Export M3U playlist"))
+        startActivity(Intent.createChooser(send, "Export M3U"))
     }
 
-    private fun loadSaved() {
-        val array = runCatching { JSONArray(prefs.getString("items", "[]")) }.getOrDefault(JSONArray())
-        for (i in 0 until array.length()) {
-            val item = array.optJSONObject(i) ?: continue
-            val url = item.optString("url")
-            if (url.isNotBlank()) links[url] = item.optLong("time")
+    private fun card(parent: LinearLayout, title: String, body: String) {
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(15, 14, 15, 14)
+            background = rounded(panel, 18)
         }
+        box.addView(label(title, 13, cyan, true))
+        box.addView(label(body, 13, white, false).apply { setPadding(0, 8, 0, 0) })
+        parent.addView(box, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = 12 })
     }
 
-    private fun saveAll() {
-        val array = JSONArray()
-        links.forEach { (url, time) -> array.put(org.json.JSONObject().put("url", url).put("time", time)) }
-        prefs.edit().putString("items", array.toString()).apply()
+    private fun actionButton(text: String, click: () -> Unit) = Button(this).apply {
+        this.text = text
+        textSize = 11f
+        setTextColor(white)
+        isAllCaps = false
+        background = rounded(0xFF35204F.toInt(), 14)
+        setOnClickListener { click() }
     }
 
-    private fun toast(message: String) = Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
+    private fun label(text: String, size: Int, color: Int, bold: Boolean) = TextView(this).apply {
+        this.text = text
+        textSize = size.toFloat()
+        setTextColor(color)
+        if (bold) setTypeface(typeface, Typeface.BOLD)
+    }
 
-    override fun onDestroy() { if (::web.isInitialized) web.destroy(); super.onDestroy() }
+    private fun rounded(color: Int, radius: Int) = GradientDrawable().apply {
+        setColor(color); cornerRadius = radius.toFloat()
+        setStroke(1, if (color == panel) 0xFF6B48A8.toInt() else purple)
+    }
 
-    @Deprecated("Deprecated in Android API")
-    override fun onBackPressed() { if (::web.isInitialized && web.canGoBack()) web.goBack() else super.onBackPressed() }
+    private fun space(h: Int) = View(this).apply { layoutParams = LinearLayout.LayoutParams(1, h) }
 }
