@@ -85,3 +85,7 @@ gradle.properties
 ### Capture limitations
 
 Android WebView request callbacks expose request URLs, not arbitrary response bodies or response Content-Type headers. Some sites construct playlist URLs dynamically or use opaque endpoints, so detection is not guaranteed for every player. The JavaScript resource observer improves coverage but is subject to page/CSP/frame restrictions. Other apps' HTTPS requests are not visible to this app. Use Share/Copy Link for URLs made available by those apps. No DRM, certificate pinning, or access-control bypass is implemented.
+
+
+## Build fix (JVM target)
+Java compilation and Kotlin compilation are both configured for JVM 17 in `app/build.gradle.kts` to avoid the GitHub Actions target mismatch. The workflow uses current checkout/setup-java action majors.
