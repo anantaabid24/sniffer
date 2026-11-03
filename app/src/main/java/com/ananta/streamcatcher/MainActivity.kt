@@ -6,6 +6,9 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ApplicationInfo
+import android.content.pm.PackageManager
+import android.content.pm.ResolveInfo
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
@@ -165,6 +168,7 @@ class MainActivity : Activity() {
                 .setMessage("1. In the source app, use Share or Copy Link.\n2. Choose Ananta Stream Catcher or paste the copied text here.\n3. If the shared text contains a playlist URL, it will appear below.\n\nAndroid isolates apps and encrypts HTTPS traffic. A normal app cannot inspect every other app's private requests or bypass DRM/certificate pinning.")
                 .setPositiveButton("GOT IT", null).show()
         })
+        shareCard.addView(action("SELECT SOURCE APP", true) { showSourceAppSelector() }, marginParams(top = 10))
         content.addView(shareCard, marginParams(bottom = 14))
 
         val captureCard = glassCard()
@@ -285,9 +289,54 @@ class MainActivity : Activity() {
                 val text = incoming.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString()
                     ?: incoming.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)?.toString()
                 if (!text.isNullOrBlank()) handleSharedText(text)
+                else toast("No text or URL was included in the shared item")
+            }
+            Intent.ACTION_SEND_MULTIPLE -> {
+                val streams = incoming.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM)
+                val combined = streams.orEmpty().joinToString("\n") { it.toString() }
+                if (combined.isNotBlank()) handleSharedText(combined) else toast("No shared URLs found")
             }
             Intent.ACTION_VIEW -> incoming.dataString?.let { handleSharedText(it) }
         }
+    }
+
+    private fun showSourceAppSelector() {
+        val pm = packageManager
+        val launchIntent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+        val apps = pm.queryIntentActivities(launchIntent, PackageManager.MATCH_ALL)
+            .filter { it.activityInfo.packageName != packageName }
+            .distinctBy { it.activityInfo.packageName }
+            .sortedBy { it.loadLabel(pm).toString().lowercase(Locale.ROOT) }
+        if (apps.isEmpty()) { toast("No launchable apps found"); return }
+        val labels = apps.map { "${it.loadLabel(pm)}  ·  ${it.activityInfo.packageName}" }.toTypedArray()
+        val saved = prefs.getString("preferred_source_package", "").orEmpty()
+        val selected = apps.indexOfFirst { it.activityInfo.packageName == saved }.coerceAtLeast(0)
+        AlertDialog.Builder(this)
+            .setTitle("Choose source app")
+            .setSingleChoiceItems(labels, selected) { dialog, which ->
+                val info = apps[which].activityInfo
+                prefs.edit().putString("preferred_source_package", info.packageName)
+                    .putString("preferred_source_label", apps[which].loadLabel(pm).toString()).apply()
+                toast("Preferred source: ${apps[which].loadLabel(pm)}")
+                dialog.dismiss()
+            }
+            .setNeutralButton("CLEAR SELECTION") { dialog, _ ->
+                prefs.edit().remove("preferred_source_package").remove("preferred_source_label").apply()
+                toast("Source selection cleared")
+                dialog.dismiss()
+            }
+            .setNegativeButton("CANCEL", null)
+            .setPositiveButton("INFO", null)
+            .create().apply {
+                setOnShowListener {
+                    getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                        AlertDialog.Builder(this@MainActivity)
+                            .setTitle("About source selection")
+                            .setMessage("Selecting an app only saves it as your preferred source for sharing/import workflows. Android does not grant access to that app's private traffic. HTTPS/TLS encryption and DRM-protected streams cannot be read by this app.")
+                            .setPositiveButton("OK", null).show()
+                    }
+                }
+            }.show()
     }
 
     private fun handleSharedText(text: String) {

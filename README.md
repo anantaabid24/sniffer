@@ -89,3 +89,11 @@ Android WebView request callbacks expose request URLs, not arbitrary response bo
 
 ## Build fix (JVM target)
 Java compilation and Kotlin compilation are both configured for JVM 17 in `app/build.gradle.kts` to avoid the GitHub Actions target mismatch. The workflow uses current checkout/setup-java action majors.
+
+
+## Source app selector and Android Share import (v1.3.0)
+
+- Open **Select Source App** to choose a launchable installed app as your preferred source. This is a convenience setting only; it does not grant access to that app's private network traffic.
+- In a source app, use **Share** and choose Ananta Stream Catcher. The app accepts shared `text/plain` URLs and shared URI items, extracts visible M3U/M3U8 candidates, deduplicates them, and stores them locally.
+- `ACTION_SEND_MULTIPLE` is also supported for multiple shared items.
+- HTTPS/TLS-encrypted requests, DRM-protected streams, and private app sessions cannot be universally inspected. Use the source app's own Share/Copy feature or an authorized provider integration.
