@@ -1,0 +1,23 @@
+ANANTA STREAM CATCHER v1.2.0
+
+This archive contains the complete Android project source.
+
+Root files:
+- settings.gradle.kts
+- build.gradle.kts
+- gradle.properties
+- README.md
+- PROJECT_FILES.txt
+
+Android app:
+- app/build.gradle.kts
+- app/src/main/AndroidManifest.xml
+- app/src/main/java/com/ananta/streamcatcher/MainActivity.kt
+- app/src/main/java/com/ananta/streamcatcher/MonitorVpnService.kt
+- app/src/main/res/values/styles.xml
+
+GitHub Actions:
+- .github/workflows/build-apk.yml
+
+Build instructions are in README.md. Push the CONTENTS of the
+ananta-stream-catcher folder to the root of a GitHub repository.
